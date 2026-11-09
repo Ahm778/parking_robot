@@ -1,0 +1,12 @@
+# Fichiers générés sur chaque machine (dépendent de la piste Humble/Lyrical ou de la graine)
+worlds/parking.world
+config/parking_slots.yaml
+config/nav2_params.yaml
+maps/parking.pgm
+maps/parking.yaml
+# Entraînement
+runs/
+*_parking_level*.zip
+__pycache__/
+*.pyc
+*.bak*
