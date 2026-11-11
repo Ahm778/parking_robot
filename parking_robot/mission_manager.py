@@ -28,8 +28,10 @@ class Mission(BasicNavigator):
         self.declare_parameter('inspect_y', 1.6)        # vision active : plaques à ~1,8 m
         self.declare_parameter('active_vision', True)
         self.declare_parameter('approach_y', 2.2)       # distance au centre de l'allée du point d'approche (m)
+        self.declare_parameter('inspect_attempts', 2)   # approches max pour relire une plaque illisible
         self.method = self.get_parameter('method').value
         self.found, self.drl_status, self.slot_states, self.inspected = {}, None, {}, set()
+        self.attempts = {}                               # tentatives de lecture par place
         self.create_subscription(String, '/parking/slot_states',
                                  lambda m: setattr(self, 'slot_states', json.loads(m.data)), 10)
         self.inspected_pub = self.create_publisher(String, '/parking/inspected', 10)
@@ -82,14 +84,21 @@ class Mission(BasicNavigator):
         while rclpy.ok():
             rclpy.spin_once(self, timeout_sec=0.1)
             if stop_if_found and self.found:
-                self.drl_cancel_pub.publish(Empty())
+                self.cancel_drl()
                 return 'found'
             if self.drl_status == 'arrived':
                 return 'ok'
             if self.drl_status in ('collision', 'stuck') or self.now_s() - t0 > timeout_s:
-                self.drl_cancel_pub.publish(Empty())
+                self.cancel_drl()
                 return 'fail'
         return 'fail'
+
+    def cancel_drl(self):
+        """Annule le but DRL puis attend 0,5 s. Sans cette pause, l'annulation et le but suivant arrivent
+        ensemble à drl_controller, qui traite le but d'abord puis l'annulation : le robot reste immobile
+        180 s (échecs « Véhicule trouvé » puis « Échec de la navigation » de la campagne du 10/11)."""
+        self.drl_cancel_pub.publish(Empty())
+        self.wait(0.5, stop_if_found=False)
 
     def inspect_suspects(self, here_x, only_column=True):
         """Vision active : va relire de près les plaques des places suspectes, la plus proche d'abord.
@@ -107,14 +116,18 @@ class Mission(BasicNavigator):
             s = min(todo, key=lambda s: abs(s['x'] - here_x))
             side = 1.0 if s['y'] > 0 else -1.0
             self.say(f"Place {s['id']} : plaque illisible d'ici, je m'approche")
-            res = self.go_to(s['x'], side * self.get_parameter('inspect_y').value, side * math.pi / 2)
+            n = self.attempts.get(s['id'], 0)
+            dy = (0.0, 0.3, -0.3)[n % 3]                 # distance un peu différente à chaque essai (idée d'Ahmed)
+            res = self.go_to(s['x'], side * (self.get_parameter('inspect_y').value + dy), side * math.pi / 2)
             if res == 'found' or self.found:
                 return
             self.wait(self.get_parameter('pause_s').value)
             if self.found:
                 return
-            self.inspected.add(s['id'])
-            self.inspected_pub.publish(String(data=s['id']))
+            self.attempts[s['id']] = n + 1
+            if n + 1 >= self.get_parameter('inspect_attempts').value:   # plaque toujours illisible : on passe
+                self.inspected.add(s['id'])
+                self.inspected_pub.publish(String(data=s['id']))
             here_x = s['x']
 
     # ---------- mission ----------
@@ -128,8 +141,12 @@ class Mission(BasicNavigator):
         t0 = self.now_s()
         self.say(f'Recherche démarrée (méthode {self.method})')
         for x, y, yaw in waypoints:
-            if self.go_to(x, y, yaw) == 'found':
+            res = self.go_to(x, y, yaw)
+            if res == 'found':
                 break
+            if res == 'fail':
+                # attention : ne pas commencer par « Échec » (metrics_logger terminerait l'essai)
+                self.say(f'Point ({x}, {y}) inaccessible (statut DRL : {self.drl_status}), je passe au suivant')
             self.wait(self.get_parameter('pause_s').value)
             if self.found:
                 break
@@ -144,8 +161,11 @@ class Mission(BasicNavigator):
         f = self.found
         self.say(f"Véhicule trouvé : rangée {f['row']}, place {f['number']} ({self.now_s() - t0:.1f} s)")
         side = 1.0 if f['y'] > 0 else -1.0
-        res = self.go_to(f['x'], side * self.get_parameter('approach_y').value, side * math.pi / 2,
-                         stop_if_found=False)
+        ay = self.get_parameter('approach_y').value
+        res = self.go_to(f['x'], side * ay, side * math.pi / 2, stop_if_found=False)
+        if res != 'ok':                                      # second essai, 0,5 m plus loin de la voiture
+            self.get_logger().info('Approche impossible, nouvel essai un peu plus loin')
+            res = self.go_to(f['x'], side * (ay - 0.5), side * math.pi / 2, stop_if_found=False, timeout_s=90.0)
         self.say('Arrivé devant votre véhicule' if res == 'ok' else 'Échec de la navigation')
 
 

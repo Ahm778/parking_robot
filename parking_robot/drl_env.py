@@ -2,12 +2,14 @@
 
 Même géométrie que le monde Gazebo (geometry.py), lidar simplifié à 24 rayons.
 Curriculum : level 0 = allée vide, 1 = voitures + obstacles fixes, 2 = + piétons mobiles.
+Piétons : par défaut ils s'arrêtent quand le robot est à moins de YIELD_DIST d'eux (comme un vrai piéton,
+et comme pedestrian_mover dans Gazebo). ped_yield=False donne des piétons « aveugles » (test de stress).
 """
 import gymnasium as gym
 import numpy as np
 from gymnasium import spaces
 
-from parking_robot.drl_common import ACTIONS, DT, MAX_R, N_RAYS, REL_ANGLES, ROBOT_R, build_obs
+from parking_robot.drl_common import ACTIONS, DT, MAX_R, N_RAYS, OBS_SIZE, REL_ANGLES, ROBOT_R, build_obs
 from parking_robot.geometry import AISLE_HALF, ROW_SIGN, XS, car_box, stops, walls
 
 
@@ -26,13 +28,16 @@ def ray_box(ox, oy, dx, dy, b):
     return tmin
 
 
+YIELD_DIST = 0.8      # distance (m) à laquelle un piéton s'arrête pour laisser passer le robot
+
+
 class ParkingNavEnv(gym.Env):
     metadata = {'render_modes': []}
 
-    def __init__(self, level=0, max_steps=400, noise=0.0):
-        self.level, self.max_steps, self.noise = level, max_steps, noise
+    def __init__(self, level=0, max_steps=400, noise=0.0, ped_yield=True):
+        self.level, self.max_steps, self.noise, self.ped_yield = level, max_steps, noise, ped_yield
         self.action_space = spaces.Discrete(len(ACTIONS))
-        self.observation_space = spaces.Box(-1.0, 1.0, (N_RAYS + 4,), np.float32)
+        self.observation_space = spaces.Box(-1.0, 1.0, (OBS_SIZE,), np.float32)
         self.fixed = walls() + stops()
 
     def boxes(self):
@@ -64,6 +69,7 @@ class ParkingNavEnv(gym.Env):
                 break
         self.steps, self.v, self.w, self.prev_a = 0, 0.0, 0.0, 4
         self.prev_d = float(np.hypot(*(self.goal - self.pose[:2])))
+        self.prev_rays = None
         return self.obs(), {}
 
     def obs(self):
@@ -71,11 +77,13 @@ class ParkingNavEnv(gym.Env):
         boxes = self.boxes()
         self.rays = np.array([min([MAX_R] + [ray_box(x, y, np.cos(th + a), np.sin(th + a), b) for b in boxes])
                               for a in REL_ANGLES])
-        rays = self.rays + (self.np_random.normal(0, self.noise, N_RAYS) if self.noise else 0.0)
+        rays = np.clip(self.rays + (self.np_random.normal(0, self.noise, N_RAYS) if self.noise else 0.0), 0, MAX_R)
+        prev = rays if self.prev_rays is None else self.prev_rays
+        self.prev_rays = rays
         dx, dy = self.goal - self.pose[:2]
         ang = np.arctan2(dy, dx) - th
         ang = np.arctan2(np.sin(ang), np.cos(ang))
-        return build_obs(np.clip(rays, 0, MAX_R), np.hypot(dx, dy), ang, self.v, self.w)
+        return build_obs(rays, prev, np.hypot(dx, dy), ang, self.v, self.w)
 
     def step(self, a):
         a = int(a)
@@ -85,6 +93,8 @@ class ParkingNavEnv(gym.Env):
         self.pose = np.array([x + self.v * np.cos(th) * DT, y + self.v * np.sin(th) * DT,
                               np.arctan2(np.sin(th), np.cos(th))])
         for p in self.peds:
+            if self.ped_yield and np.hypot(p[0] - self.pose[0], p[1] - self.pose[1]) < YIELD_DIST:
+                continue                                  # le piéton laisse passer le robot
             p[1] += p[2] * DT
             if abs(p[1]) > 2.5:
                 p[2] *= -1
@@ -99,4 +109,4 @@ class ParkingNavEnv(gym.Env):
         collision, success = bool(self.rays.min() < ROBOT_R), d < 0.3
         rew += -10.0 if collision else (10.0 if success else 0.0)
         return o, float(rew), collision or success, self.steps >= self.max_steps, \
-            {'collision': collision, 'success': success}
+            {'collision': collision, 'success': success, 'hit_while_stopped': collision and self.v == 0.0}

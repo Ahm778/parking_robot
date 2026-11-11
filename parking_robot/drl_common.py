@@ -10,9 +10,16 @@ N_RAYS, MAX_R, DT, ROBOT_R = 24, 3.5, 0.2, 0.2      # 24 secteurs de 15°, port�
 REL_ANGLES = np.linspace(-np.pi, np.pi, N_RAYS, endpoint=False)   # angle de chaque secteur / avant du robot
 
 
-def build_obs(rays, d, ang, v, w):
-    """Observation de 28 valeurs dans [-1, 1] : 24 distances, distance et angle au but, v, w."""
-    return np.concatenate([np.minimum(rays, MAX_R) / MAX_R * 2 - 1,
+OBS_SIZE = 2 * N_RAYS + 4
+DELTA_SCALE = 0.3      # variation max d'un secteur entre deux pas (m) : piéton à 0.7 m/s + robot
+
+
+def build_obs(rays, prev_rays, d, ang, v, w):
+    """Observation de 52 valeurs dans [-1, 1] : 24 distances, leur variation depuis le pas précédent
+    (pour voir si un obstacle approche : piéton), distance et angle au but, v, w."""
+    rays = np.minimum(rays, MAX_R)
+    delta = np.clip((rays - np.minimum(prev_rays, MAX_R)) / DELTA_SCALE, -1.0, 1.0)
+    return np.concatenate([rays / MAX_R * 2 - 1, delta,
                            [min(d, 10.0) / 5 - 1, ang / np.pi, v / 0.22 * 2 - 1, w / 0.8]]).astype(np.float32)
 
 

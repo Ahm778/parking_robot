@@ -62,7 +62,9 @@ def render_plate_png(plate, path, px_w=700, px_h=150):
 
     def font(size):
         if font_path:
-            return ImageFont.truetype(font_path, size, layout_engine=getattr(ImageFont, 'LAYOUT_BASIC', 0))
+            # Pillow >= 9.1 : ImageFont.Layout.BASIC ; Pillow 9.0 (Ubuntu 22.04) : ImageFont.LAYOUT_BASIC ; valeur 0
+            basic = ImageFont.Layout.BASIC if hasattr(ImageFont, 'Layout') else getattr(ImageFont, 'LAYOUT_BASIC', 0)
+            return ImageFont.truetype(font_path, size, layout_engine=basic)
         return ImageFont.load_default(size=size)
 
     size = int(px_h * 0.72)
@@ -112,7 +114,8 @@ def find_plate(crop_bgr):
     """Cherche une plaque noire à caractères blancs dans la découpe d'une voiture. Renvoie l'image ou None.
 
     On cherche une zone sombre rectangulaire, allongée comme une plaque (52 x 11 cm, rapport ~4,7),
-    qui contient une part raisonnable de pixels blancs (les caractères).
+    qui contient une part raisonnable de pixels blancs (les caractères). Sur une voiture sombre, on la
+    retrouve par son liseré et ses caractères clairs (idée d'Ahmed : passer par ce qui est clair).
     """
     h, w = crop_bgr.shape[:2]
     if h < 10 or w < 20:
@@ -124,8 +127,18 @@ def find_plate(crop_bgr):
     # 2e essai sans (plaque proche ou cadre noir collé à la plaque)
     k = max(9, int(0.05 * big.shape[0]) | 1)
     closed = cv2.morphologyEx(dark0, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (k, k)))
+    # 3e essai, pour une voiture sombre où la plaque noire se confond avec la carrosserie : on cherche le
+    # liseré et les caractères clairs (« chapeau haut-de-forme » : ce qui est plus clair que son voisinage)
+    def bright_mask():
+        kt = max(31, min(int(0.5 * big.shape[0]) | 1, 101))
+        tophat = cv2.morphologyEx(value, cv2.MORPH_TOPHAT, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (kt, kt)))
+        hi = float(np.percentile(tophat, 99.0))
+        return (tophat > max(15.0, 0.4 * hi)).astype(np.uint8) * 255 if hi >= 20 else np.zeros_like(dark0)
+
     best, best_area = None, 0
-    for dark in (closed, dark0):
+    for dark in (closed, dark0, None):
+        if dark is None:
+            dark = bright_mask()                  # calculé seulement si les deux premiers essais échouent
         contours, _ = cv2.findContours(dark, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)
         for c in contours:
             rect = cv2.minAreaRect(c)                      # rectangle orienté : tolère une plaque inclinée
@@ -133,7 +146,8 @@ def find_plate(crop_bgr):
             s_, d_ = pts.sum(1), np.diff(pts, axis=1).ravel()
             tl, br, tr, bl = pts[np.argmin(s_)], pts[np.argmax(s_)], pts[np.argmin(d_)], pts[np.argmax(d_)]
             rw, rh = float(np.linalg.norm(tr - tl)), float(np.linalg.norm(bl - tl))
-            if rh < 12 or rw < 45 or not 2.8 < rw / rh < 7.5 or rw * rh <= best_area:
+            # une plaque (0,70 m) occupe au moins ~15 % de la largeur d'une voiture (~2 m) : on écarte les petits morceaux
+            if rh < 12 or rw < max(45, 0.15 * big.shape[1]) or not 2.8 < rw / rh < 7.5 or rw * rh <= best_area:
                 continue
             M = cv2.getPerspectiveTransform(np.float32([tl, tr, br, bl]),
                                             np.float32([[0, 0], [rw, 0], [rw, rh], [0, rh]]))
@@ -200,12 +214,6 @@ def read_plate(plate_bgr, timeout_s=1.0):
     return '-'.join(groups_read[:2]) if len(groups_read) >= 2 else ''
 
 
-if __name__ == '__main__':          # petit test : python3 -m parking_robot.plates
-    p = random_plate(random.Random(0))
-    render_plate_png(p, '/tmp/plate_test.png')
-    print('plaque :', display(p), '-> lu :', read_plate(cv2.imread('/tmp/plate_test.png')))
-
-
 # --- Lecture par les chiffres clairs : pour les voitures sombres, où la plaque se confond avec la carrosserie ---
 def find_plate_chars(crop_bgr):
     """Plaque par ses chiffres clairs (pour les voitures sombres) : retourne la plaque redressée ou None."""
@@ -268,12 +276,26 @@ def find_plate_chars(crop_bgr):
     return out if out.size else None
 
 
+VALID_PLATE = re.compile(r'^\d{1,3}-\d{1,4}$')
+
+
 def read_plate_robust(crop_bgr):
-    """Lit la plaque dans la zone basse d'une voiture : d'abord par les chiffres clairs (marche sur une
-    carrosserie sombre), puis par le rectangle sombre d'origine. Retourne '' si rien n'est lu."""
+    """Lit la plaque dans la zone basse d'une voiture. Renvoie 'série-numéro' ou ''.
+
+    1) rectangle de la plaque (find_plate : fond sombre, ou liseré clair sur voiture sombre) ;
+    2) en secours, regroupement des chiffres clairs alignés (find_plate_chars, contribution d'Ahmed).
+    Une lecture n'est acceptée que si elle a la forme d'une plaque (1-3 chiffres, tiret, 1-4 chiffres).
+    """
+    found = find_plate(crop_bgr)
+    txt = read_plate(found) if found is not None else ''
+    if VALID_PLATE.match(txt):
+        return txt
     alt = find_plate_chars(crop_bgr)
     txt = read_plate(alt) if alt is not None else ''
-    if txt:
-        return txt
-    found = find_plate(crop_bgr)
-    return read_plate(found) if found is not None else ''
+    return txt if VALID_PLATE.match(txt) else ''
+
+
+if __name__ == '__main__':          # petit test : python3 -m parking_robot.plates
+    p = random_plate(random.Random(0))
+    render_plate_png(p, '/tmp/plate_test.png')
+    print('plaque :', display(p), '-> lu :', read_plate(cv2.imread('/tmp/plate_test.png')))

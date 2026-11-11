@@ -31,7 +31,10 @@ class DRLController(Node):
         self.tf = Buffer()
         self.tf_listener = TransformListener(self.tf, self)
         self.scan, self.goal, self.path, self.v, self.w = None, None, [], 0.0, 0.0
-        self.last_progress, self.best_d = None, None
+        self.last_progress, self.best_d, self.prev_rays = None, None, None
+        self.align_steps, self.unstick, self.back_steps = 0, 0, 0
+        self.aligning = False                             # dans la zone d'arrivée : on pivote jusqu'au bout
+        self.hits = 0                                     # pas consécutifs en collision (dégagement)
         self.create_subscription(LaserScan, '/scan', self.on_scan, qos_profile_sensor_data)
         self.create_subscription(PoseStamped, '/drl/goal', self.on_goal, 10)
         self.create_subscription(Empty, '/drl/cancel', self.on_cancel, 10)
@@ -48,7 +51,8 @@ class DRLController(Node):
         self.cmd.send(0.0, 0.0)
 
     def on_goal(self, msg):
-        self.goal, self.path = msg, []
+        self.goal, self.path, self.prev_rays, self.hits = msg, [], None, 0
+        self.align_steps, self.unstick, self.back_steps, self.aligning = 0, 0, 0, False
         self.best_d, self.last_progress = None, self.get_clock().now()
         if self.get_parameter('mode').value == 'hybrid':
             g = ComputePathToPose.Goal()
@@ -92,16 +96,53 @@ class DRLController(Node):
         gx, gy = self.goal.pose.position.x, self.goal.pose.position.y
         d_goal = math.hypot(gx - x, gy - y)
         rays = self.sectors()
-        if d_goal < 0.3:
+        # Zone d'arrivée avec hystérésis : on y entre à 0,3 m et on n'en sort qu'au-delà de 0,6 m.
+        # Avant, le robot pivotait à 0,28 m, glissait à 0,30 m, la politique reprenait la main, l'éloignait,
+        # puis il revenait : boucle « alignement » sans fin (S2 et S4 hybride du 10/11).
+        if d_goal < 0.3 or (self.aligning and d_goal < 0.6):
+            self.aligning = True
+            q = self.goal.pose.orientation
+            gyaw = math.atan2(2 * (q.w * q.z + q.x * q.y), 1 - 2 * (q.y * q.y + q.z * q.z))
+            err = math.atan2(math.sin(gyaw - th), math.cos(gyaw - th))
+            if abs(err) > 0.15 and self.align_steps < 75:     # pivoter vers l'orientation demandée (15 s max)
+                self.align_steps += 1
+                self.get_logger().info(f'alignement : erreur {err:.2f} rad, but à {d_goal:.2f} m',
+                                       throttle_duration_sec=2.0)
+                self.cmd.send(0.0, math.copysign(max(0.25, min(0.8, 2.0 * abs(err))), err))
+                return
             return self.finish('arrived')
+        self.aligning = False
+        if self.back_steps > 0:                               # manœuvre de dégagement en cours
+            self.back_steps -= 1
+            if rays[[23, 0, 1]].min() > 0.35:
+                self.cmd.send(-0.08, 0.0)
+            else:
+                self.cmd.send(0.0, 0.8 if rays[:12].min() < rays[12:].min() else -0.8)
+            return
         if rays.min() < ROBOT_R * 0.75:
-            return self.finish('collision')
+            self.hits += 1
+            if self.hits > 15:                            # 3 s de manœuvre sans succès : on abandonne
+                return self.finish('collision')
+            if rays[[23, 0, 1]].min() > 0.35:             # arrière dégagé : reculer
+                self.cmd.send(-0.08, 0.0)
+            else:                                         # sinon pivoter vers le côté le plus dégagé
+                self.cmd.send(0.0, 0.8 if rays[:12].min() < rays[12:].min() else -0.8)
+            return
+        self.hits = 0
         # pas de progrès pendant 30 s -> bloqué
         now = self.get_clock().now()
         if self.best_d is None or d_goal < self.best_d - 0.1:
             self.best_d, self.last_progress = d_goal, now
-        elif (now - self.last_progress).nanoseconds * 1e-9 > 30.0:
-            return self.finish('stuck')
+        elif (now - self.last_progress).nanoseconds * 1e-9 > 20.0:
+            if self.unstick >= 2:
+                return self.finish('stuck')
+            self.unstick += 1                                 # arrêt, recul 2 s, puis nouveau calcul
+            self.back_steps = 10
+            self.get_logger().info(f'bloqué : recul puis nouveau calcul (essai {self.unstick}/2), '
+                                   f'but à {d_goal:.2f} m')
+            self.last_progress = now
+            self.cmd.send(0.0, 0.0)
+            return
         # point visé : but final (M2) ou point du chemin A* situé lookahead plus loin (M3)
         tx, ty = gx, gy
         if self.path:
@@ -111,8 +152,19 @@ class DRLController(Node):
             tx, ty = next(((px, py) for px, py in self.path if math.hypot(px - x, py - y) >= la), (gx, gy))
         ang = math.atan2(ty - y, tx - x) - th
         ang = math.atan2(math.sin(ang), math.cos(ang))
-        a = self.policy.act(build_obs(rays, math.hypot(tx - x, ty - y), ang, self.v, self.w))
+        prev = rays if self.prev_rays is None else self.prev_rays
+        self.prev_rays = rays
+        a = self.policy.act(build_obs(rays, prev, math.hypot(tx - x, ty - y), ang, self.v, self.w))
         self.v, self.w = ACTIONS[a]
+        front = rays[9:16].min()                          # cône avant ±45° (indice 12 = droit devant)
+        if front < 0.45:                                  # trop près : on n'avance plus, rotation seulement
+            self.get_logger().info(f'bouclier : obstacle à {front:.2f} m devant, '
+                                   f'but à {d_goal:.2f} m', throttle_duration_sec=2.0)
+            self.v = 0.0
+            if self.w == 0.0:
+                self.w = 0.8 if rays[9:12].min() < rays[13:16].min() else -0.8
+        elif front < 0.80:
+            self.v = min(self.v, 0.08)
         self.cmd.send(self.v, self.w)
 
 

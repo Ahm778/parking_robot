@@ -14,7 +14,7 @@ from std_msgs.msg import String
 
 from parking_robot.common import share_path
 
-END_PREFIXES = ('Arrivé', 'Échec', 'Véhicule non')
+END_PREFIXES = ('Arrivé devant', 'Échec de la navigation', 'Véhicule non trouvé')
 
 
 class MetricsLogger(Node):

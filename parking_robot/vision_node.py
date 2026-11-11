@@ -23,7 +23,7 @@ from sensor_msgs.msg import CameraInfo, Image
 from std_msgs.msg import String
 
 from parking_robot.common import share_path
-from parking_robot.plates import find_plate, plate_similarity, read_plate, read_plate_robust
+from parking_robot.plates import plate_similarity, read_plate_robust
 
 HUES = {'rouge': [(0, 10), (170, 179)], 'orange': [(11, 22)], 'jaune': [(23, 34)],
         'vert': [(35, 85)], 'bleu': [(86, 130)], 'violet': [(131, 169)]}     # teinte OpenCV : 0-179
@@ -82,10 +82,12 @@ class VisionNode(Node):
         self.declare_parameter('confirm_frames', 5)
         self.declare_parameter('model_path', share_path('weights', 'yolov5n.onnx'))
         self.declare_parameter('input_size', 320)
+        self.declare_parameter('yolo_conf', 0.2)          # 0,2 : les voitures Gazebo sont détectées avec moins d'assurance
         self.declare_parameter('target_plate', '')
         self.declare_parameter('plate_threshold', 0.8)   # 0,8 tolère environ un caractère mal lu sur 9
         self.declare_parameter('max_ocr_per_frame', 2)   # Tesseract coûte ~0,1 s par lecture
-        self.yolo = YoloOnnx(self.get_parameter('model_path').value, self.get_parameter('input_size').value)
+        self.yolo = YoloOnnx(self.get_parameter('model_path').value, self.get_parameter('input_size').value,
+                             self.get_parameter('yolo_conf').value)
         self.bridge, self.fx, self.cx = CvBridge(), None, None
         self.streak, self.last_bearing = 0, None
         self.frame, self.plate_cache = 0, {}

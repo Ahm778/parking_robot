@@ -141,7 +141,7 @@ def main():
                          f"<pose>{s['x']} {py:.3f} {PLATE_Z} 0 0 {yaw:.4f}</pose></include>")
         out_slots.append({**s, 'gt_car': model, 'gt_plate': plate})
 
-    parts.append(pedestrian(sim, 0.0, -2.5))
+    parts.append(pedestrian(sim, -1.5, -2.5))     # entre deux colonnes d'observation (x = -3 et x = 0)
     parts.append(box('blocker', 0.0, -15.0, 0.8, 3.0, 1.0, '0.8 0.2 0.2 1'))   # S4 : rangé hors du parking
 
     systems = CLASSIC_SYSTEMS if sim == 'classic' else GZ_SYSTEMS

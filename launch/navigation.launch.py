@@ -44,16 +44,19 @@ def generate_launch_description():
     pkg = get_package_share_directory('parking_robot')
     nav2 = get_package_share_directory('nav2_bringup')
     sim = {'use_sim_time': True}
+    odom_x, odom_y = (0.0, 0.0) if os.environ.get('ROS_DISTRO') == 'humble' else ROBOT_START
     return LaunchDescription([
         DeclareLaunchArgument('rviz', default_value='true'),
         Node(package='nav2_map_server', executable='map_server', name='map_server', output='screen',
              parameters=[sim, {'yaml_filename': os.path.join(pkg, 'maps', 'parking.yaml')}]),
         Node(package='nav2_lifecycle_manager', executable='lifecycle_manager', name='lifecycle_manager_map',
              output='screen', parameters=[sim, {'autostart': True, 'node_names': ['map_server']}]),
-        # Le robot démarre à ROBOT_START et l'odométrie part de (0, 0) : map -> odom = ROBOT_START
+        # map -> odom. Gazebo Classic (Humble) : l'odométrie du TurtleBot3 est donnée dans le repère du monde
+        # (le robot démarre déjà à ROBOT_START dans /odom), donc map = odom. Gazebo moderne : l'odométrie part
+        # de (0, 0) au point de départ, donc map -> odom = ROBOT_START.
         Node(package='tf2_ros', executable='static_transform_publisher', name='map_to_odom',
              parameters=[sim],
-             arguments=['--x', '0.0', '--y', '0.0', '--z', '0',
+             arguments=['--x', str(odom_x), '--y', str(odom_y), '--z', '0',
                         '--frame-id', 'map', '--child-frame-id', 'odom']),
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(nav2, 'launch', 'navigation_launch.py')),

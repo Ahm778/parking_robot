@@ -13,7 +13,7 @@ import yaml
 
 DWB = {
     'plugin': 'dwb_core::DWBLocalPlanner',
-    'debug_trajectory_details': True,
+    'debug_trajectory_details': False,          # True publie toutes les trajectoires : coûte cher en CPU
     'min_vel_x': 0.0, 'min_vel_y': 0.0, 'max_vel_x': 0.22, 'max_vel_y': 0.0, 'max_vel_theta': 1.0,
     'min_speed_xy': 0.0, 'max_speed_xy': 0.22, 'min_speed_theta': 0.0,
     'acc_lim_x': 2.5, 'acc_lim_y': 0.0, 'acc_lim_theta': 3.2,
@@ -41,10 +41,19 @@ def main():
     planner['planner_plugins'] = ['GridBased']
     navfn = 'nav2_navfn_planner/NavfnPlanner' if distro == 'humble' else 'nav2_navfn_planner::NavfnPlanner'
     planner['GridBased'] = {'plugin': navfn, 'use_astar': True, 'tolerance': 0.5, 'allow_unknown': True}
+    planner['expected_planner_frequency'] = 1.0      # le BT replanifie à 1 Hz : évite des avertissements inutiles
 
     ctrl = p['controller_server']['ros__parameters']
     ctrl['controller_plugins'] = ['FollowPath']
     ctrl['FollowPath'] = DWB
+    # PC chargé (Gazebo + vision + Nav2) : la boucle à 20 Hz ratait sa cadence et le contrôle de progression
+    # (0,5 m en 10 s, demi-tour sur place non compté) abandonnait en boucle : « Failed to make progress »
+    # (campagne S4 du 10/11). 10 Hz suffisent à 0,22 m/s ; on exige 0,2 m de progrès en 20 s.
+    ctrl['controller_frequency'] = 10.0
+    for v in ctrl.values():
+        if isinstance(v, dict) and 'ProgressChecker' in str(v.get('plugin', '')):
+            v['required_movement_radius'] = 0.2
+            v['movement_time_allowance'] = 20.0
 
     out = Path(__file__).resolve().parents[1] / 'config' / 'nav2_params.yaml'
     out.parent.mkdir(exist_ok=True)

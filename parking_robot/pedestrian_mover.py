@@ -2,10 +2,16 @@
 
 Piste 22.04 (Gazebo Classic) : téléportation à 20 Hz via le service /gazebo/set_entity_state
 Piste 26.04 (Gazebo Jetty)   : vitesse envoyée au plugin VelocityControl via /model/ped_1/cmd_vel (pont ros_gz)
+Comme un vrai piéton, il s'arrête quand le robot est à moins de yield_dist (0 = ne s'arrête jamais).
+Même règle que l'environnement d'entraînement DRL (drl_env.py, YIELD_DIST).
 """
+import math
+
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
+from rclpy.time import Time
+from tf2_ros import Buffer, TransformListener
 
 from parking_robot.common import IS_CLASSIC
 
@@ -14,11 +20,14 @@ class PedestrianMover(Node):
     def __init__(self):
         super().__init__('pedestrian_mover')
         self.declare_parameter('name', 'ped_1')
-        self.declare_parameter('x', 0.0)          # colonne où il traverse (m)
+        self.declare_parameter('x', -1.5)         # où il traverse : entre deux colonnes d'observation (m)
         self.declare_parameter('y_min', -2.5)     # doit correspondre à la pose initiale dans le monde
         self.declare_parameter('y_max', 2.5)
         self.declare_parameter('speed', 0.5)      # m/s
-        self.t = 0.0
+        self.declare_parameter('yield_dist', 0.8)  # m ; 0 = piéton « aveugle » (test de stress)
+        self.t, self.y = 0.0, None
+        self.tf = Buffer()
+        self.tf_listener = TransformListener(self.tf, self)
         if IS_CLASSIC:
             from gazebo_msgs.srv import SetEntityState
             self.Req = SetEntityState.Request
@@ -35,9 +44,23 @@ class PedestrianMover(Node):
         d = (p('speed') * self.t) % (2 * span)
         return (p('y_min') + d, 1.0) if d < span else (p('y_max') - (d - span), -1.0)
 
+    def robot_close(self):
+        d = float(self.get_parameter('yield_dist').value)
+        if d <= 0.0 or self.y is None:
+            return False
+        try:
+            t = self.tf.lookup_transform('map', 'base_footprint', Time())
+        except Exception:  # noqa: BLE001
+            return False
+        rx, ry = t.transform.translation.x, t.transform.translation.y
+        return math.hypot(rx - float(self.get_parameter('x').value), ry - self.y) < d
+
     def step(self):
-        self.t += 0.05
+        waiting = self.robot_close()
+        if not waiting:
+            self.t += 0.05
         y, direction = self.triangle()
+        self.y = y
         if IS_CLASSIC:
             if not self.cli.service_is_ready():
                 return
@@ -50,7 +73,7 @@ class PedestrianMover(Node):
             self.cli.call_async(req)
         else:
             msg = Twist()
-            msg.linear.y = direction * float(self.get_parameter('speed').value)
+            msg.linear.y = 0.0 if waiting else direction * float(self.get_parameter('speed').value)
             self.pub.publish(msg)
 
 
