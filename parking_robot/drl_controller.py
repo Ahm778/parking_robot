@@ -19,6 +19,7 @@ from tf2_ros import Buffer, TransformListener
 
 from parking_robot.common import CmdVelPublisher, share_path
 from parking_robot.drl_common import ACTIONS, DT, MAX_R, REL_ANGLES, ROBOT_R, NumpyPolicy, build_obs
+from parking_robot.geometry import SPEED
 
 
 class DRLController(Node):
@@ -108,7 +109,7 @@ class DRLController(Node):
                 self.align_steps += 1
                 self.get_logger().info(f'alignement : erreur {err:.2f} rad, but à {d_goal:.2f} m',
                                        throttle_duration_sec=2.0)
-                self.cmd.send(0.0, math.copysign(max(0.25, min(0.8, 2.0 * abs(err))), err))
+                self.cmd.send(0.0, math.copysign(max(0.25, min(0.8, 2.0 * abs(err))), err) * min(SPEED, 1.5))
                 return
             return self.finish('arrived')
         self.aligning = False
@@ -165,7 +166,11 @@ class DRLController(Node):
                 self.w = 0.8 if rays[9:12].min() < rays[13:16].min() else -0.8
         elif front < 0.80:
             self.v = min(self.v, 0.08)
-        self.cmd.send(self.v, self.w)
+        # Mode démo : rapide quand la voie devant est libre, puis ralentit progressivement en approchant
+        # d'un obstacle ou d'une voiture (vitesse normale à moins de 0,6 m). Rotation jamais accélérée.
+        # En mode normal SPEED = 1 : k = 1, comportement identique à la campagne.
+        k = 1.0 + (SPEED - 1.0) * min(1.0, max(0.0, (front - 0.6) / 1.4))
+        self.cmd.send(self.v * k, self.w)
 
 
 def main():

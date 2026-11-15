@@ -9,6 +9,9 @@ import os
 import sys
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from parking_robot.geometry import SPEED  # noqa: E402
+
 import yaml
 
 DWB = {
@@ -46,6 +49,15 @@ def main():
     ctrl = p['controller_server']['ros__parameters']
     ctrl['controller_plugins'] = ['FollowPath']
     ctrl['FollowPath'] = DWB
+    if SPEED != 1.0:                                   # mode démo : robot plus rapide (1 en mode normal)
+        fp = ctrl['FollowPath'] = dict(DWB)
+        for k in ('max_vel_x', 'max_speed_xy'):
+            fp[k] = round(DWB[k] * SPEED, 3)
+        fp['max_vel_theta'] = 1.5
+        vs = p.get('velocity_smoother', {}).get('ros__parameters')
+        if vs:
+            vs['max_velocity'] = [round(0.26 * SPEED, 3), 0.0, 1.5]
+            vs['min_velocity'] = [-round(0.26 * SPEED, 3), 0.0, -1.5]
     # PC chargé (Gazebo + vision + Nav2) : la boucle à 20 Hz ratait sa cadence et le contrôle de progression
     # (0,5 m en 10 s, demi-tour sur place non compté) abandonnait en boucle : « Failed to make progress »
     # (campagne S4 du 10/11). 10 Hz suffisent à 0,22 m/s ; on exige 0,2 m de progrès en 20 s.

@@ -23,7 +23,8 @@ from tf2_ros import Buffer, TransformListener
 from visualization_msgs.msg import Marker, MarkerArray
 
 from parking_robot.common import load_slots
-from parking_robot.geometry import SLOT_L, SLOT_W
+from rclpy.time import Time
+from parking_robot.geometry import AISLE_HALF, AISLES_Y, ROW_AISLE, SLOT_L, SLOT_W
 from parking_robot.slot_tracker import COLORS, SlotTracker
 
 NONE_WORDS = ('', 'aucune', 'aucun', 'none', '-')
@@ -81,6 +82,26 @@ class CarLocator(Node):
             return None
         return q.x, q.y
 
+    def nearest_here(self, x, y):
+        """Place la plus proche du point vu, limitée aux 2 rangées qui bordent l'allée où roule le robot.
+
+        Mode démo (plusieurs allées) : par une place vide, la caméra voit l'arrière des voitures de la rangée
+        suivante ; sans ce filtre elles devenaient « suspectes » et le robot changeait d'allée pour rien.
+        Mode normal (une seule allée) : identique à avant."""
+        if len(AISLES_Y) == 1:
+            return self.tracker.nearest(x, y)
+        try:
+            ry = self.tf.lookup_transform('map', 'base_footprint', Time()).transform.translation.y
+        except Exception:  # noqa: BLE001
+            return None
+        aisle = min(AISLES_Y, key=lambda a: abs(a - ry))
+        if abs(aisle - ry) > AISLE_HALF + 0.5:
+            return None                                 # dans la voie périphérique : on n'attribue rien
+        here = [s for s in self.tracker.slots.values() if ROW_AISLE[s['row']][0] == aisle]
+        best = min(here, key=lambda s: (s['x'] - x) ** 2 + (s['y'] - y) ** 2)
+        d = ((best['x'] - x) ** 2 + (best['y'] - y) ** 2) ** 0.5
+        return best['id'] if d <= self.tracker.max_dist else None
+
     def on_candidate(self, msg):
         c = json.loads(msg.data)
         if not c['confirmed'] or self.found:
@@ -88,7 +109,7 @@ class CarLocator(Node):
         xy = self.project(c['bearing'])
         if xy is None:
             return
-        sid = self.tracker.nearest(*xy)
+        sid = self.nearest_here(*xy)
         if sid is None:
             return
         self.votes[sid] = self.votes.get(sid, 0) + 1
@@ -105,7 +126,7 @@ class CarLocator(Node):
     def on_observations(self, msg):
         for o in json.loads(msg.data):
             xy = self.project(o['bearing'])
-            sid = self.tracker.nearest(*xy) if xy else None
+            sid = self.nearest_here(*xy) if xy else None
             if sid:
                 self.tracker.observe(sid, o)
 

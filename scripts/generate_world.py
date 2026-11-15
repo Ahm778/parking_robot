@@ -19,7 +19,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from parking_robot.geometry import (CAR_CY, CAR_FRONT, ROBOT_START, ROW_SIGN, SLOT_L, SLOT_W,  # noqa: E402
+from parking_robot.geometry import (AISLE_HALF, BLOCKER_PARK, DEMO, MEDIANS, PED, ROWS, WALL_X, WALL_Y, CAR_CY, CAR_FRONT, ROBOT_START, ROW_SIGN, SLOT_L, SLOT_W,  # noqa: E402
                                     STOP_CY, STOP_SIZE, WALL_C, WALL_H, WALL_T, XS, slots)
 from parking_robot.plates import PLATE_Z, display, random_plate, write_plate_model  # noqa: E402
 
@@ -70,8 +70,8 @@ COMMON_SCENE = """
 <light type='directional' name='sun'><cast_shadows>false</cast_shadows><pose>0 0 10 0 0 0</pose>
 <diffuse>{light} {light} {light} 1</diffuse><specular>0.2 0.2 0.2 1</specular><direction>-0.5 0.1 -0.9</direction></light>
 <model name='ground_plane'><static>true</static><link name='link'>
-<collision name='collision'><geometry><plane><normal>0 0 1</normal><size>40 40</size></plane></geometry></collision>
-<visual name='visual'><geometry><plane><normal>0 0 1</normal><size>40 40</size></plane></geometry>
+<collision name='collision'><geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry></collision>
+<visual name='visual'><geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry>
 <material><ambient>0.35 0.35 0.35 1</ambient><diffuse>0.35 0.35 0.35 1</diffuse></material></visual></link></model>"""
 
 
@@ -92,15 +92,15 @@ def main():
     rng = random.Random(a.seed)
 
     parts = []
-    c, t = WALL_C, WALL_T
-    for i, (x, y, sx, sy) in enumerate([(0, c, 2 * c + t, t), (0, -c, 2 * c + t, t), (c, 0, t, 2 * c), (-c, 0, t, 2 * c)]):
+    cx, cy, t = WALL_X, WALL_Y, WALL_T
+    for i, (x, y, sx, sy) in enumerate([(0, cy, 2 * cx + t, t), (0, -cy, 2 * cx + t, t), (cx, 0, t, 2 * cy), (-cx, 0, t, 2 * cy)]):
         parts.append(box(f'wall_{i}', x, y, sx, sy, WALL_H, '0.6 0.6 0.6 1'))
     for row, s in ROW_SIGN.items():
         for k in range(len(XS) + 1):                                  # lignes blanches (sans collision)
             x = XS[0] - SLOT_W / 2 + k * SLOT_W
-            parts.append(box(f'line_{row}{k}', x, s * (3.0 + SLOT_L / 2), 0.1, SLOT_L, 0.005, '1 1 1 1', collide=False))
+            parts.append(box(f'line_{row}{k}', x, ROWS[row]['slot_cy'], 0.1, SLOT_L, 0.005, '1 1 1 1', collide=False))
         for i, x in enumerate(XS):                                    # butées (vues par le lidar)
-            parts.append(box(f'stop_{row}{i + 1}', x, s * STOP_CY, *STOP_SIZE, '0.9 0.8 0.1 1'))
+            parts.append(box(f'stop_{row}{i + 1}', x, ROWS[row]['stop_y'], *STOP_SIZE, '0.9 0.8 0.1 1'))
 
     all_slots = slots()
     n_occ = max(1, round(a.occupancy * len(all_slots)))
@@ -132,18 +132,23 @@ def main():
             sign = ROW_SIGN[s['row']]
             yaw = -math.pi / 2 if sign > 0 else math.pi / 2        # l'avant (+x du modèle) regarde l'allée
             parts.append(f"<include><name>car_{s['id']}</name><uri>model://{model}</uri><static>true</static>"
-                         f"<pose>{s['x']} {sign * CAR_CY} 0 0 0 {yaw:.4f}</pose></include>")
+                         f"<pose>{s['x']} {ROWS[s['row']]['car_cy']} 0 0 0 {yaw:.4f}</pose></include>")
             # plaque : rectangle texturé posé juste devant le pare-chocs, face à l'allée
             name = f"plate_{s['id']}"
             write_plate_model(a.plates_dir, name, plate)
-            py = sign * (CAR_CY - CAR_FRONT.get(model, 2.5) - 0.02)
+            py = ROWS[s['row']]['car_cy'] - sign * (CAR_FRONT.get(model, 2.5) + 0.02)
             parts.append(f"<include><name>{name}</name><uri>model://{name}</uri><static>true</static>"
                          f"<pose>{s['x']} {py:.3f} {PLATE_Z} 0 0 {yaw:.4f}</pose></include>")
         out_slots.append({**s, 'gt_car': model, 'gt_plate': plate})
 
-    parts.append(pedestrian(sim, -1.5, -2.5))     # entre deux colonnes d'observation (x = -3 et x = 0)
-    parts.append(box('blocker', 0.0, -15.0, 0.8, 3.0, 1.0, '0.8 0.2 0.2 1'))   # S4 : rangé hors du parking
+    parts.append(pedestrian(sim, PED[0], PED[1]))     # entre deux colonnes d'observation (x = -3 et x = 0)
+    parts.append(box('blocker', BLOCKER_PARK[0], BLOCKER_PARK[1], 0.8, 3.0, 1.0, ('1 0.45 0 1' if DEMO else '0.8 0.2 0.2 1')))   # S4 : rangé hors du parking
 
+    for k, (mx, my, sx, sy) in enumerate(MEDIANS):                # terre-plein (mode démo)
+        parts.append(box(f'median_{k}', mx, my, sx, sy, 0.2, '0.55 0.55 0.5 1'))
+    if DEMO:                                                      # décor de la vidéo
+        from parking_robot.demo_decor import decor
+        parts += decor()
     systems = CLASSIC_SYSTEMS if sim == 'classic' else GZ_SYSTEMS
     world = ("<?xml version='1.0'?>\n<sdf version='1.7'><world name='parking'>" + systems
              + COMMON_SCENE.format(light=a.light) + '\n' + '\n'.join(parts) + '\n</world></sdf>\n')

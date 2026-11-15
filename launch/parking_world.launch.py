@@ -30,9 +30,15 @@ def generate_launch_description():
         return IncludeLaunchDescription(PythonLaunchDescriptionSource(path),
                                         launch_arguments=(args or {}).items())
 
+    demo_sdf = os.path.join(models, 'turtlebot3_waffle_pi_demo', 'model.sdf')   # créé par make_demo_robot.py
+    if os.environ.get('PARKING_DEMO') == '1' and os.environ.get('ROS_DISTRO') == 'humble' and os.path.exists(demo_sdf):
+        spawn = Node(package='gazebo_ros', executable='spawn_entity.py', output='screen',
+                     arguments=['-entity', 'waffle_pi', '-file', demo_sdf, '-x', x, '-y', y, '-z', '0.01'])
+    else:
+        spawn = inc(os.path.join(tb3, 'launch', 'spawn_turtlebot3.launch.py'), {'x_pose': x, 'y_pose': y})
     robot = [
         inc(os.path.join(tb3, 'launch', 'robot_state_publisher.launch.py'), {'use_sim_time': 'true'}),
-        inc(os.path.join(tb3, 'launch', 'spawn_turtlebot3.launch.py'), {'x_pose': x, 'y_pose': y}),
+        spawn,
     ]
 
     if os.environ.get('ROS_DISTRO') == 'humble':          # ---------- Gazebo Classic ----------

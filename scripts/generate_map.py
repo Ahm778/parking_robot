@@ -11,9 +11,12 @@ import yaml
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from parking_robot.geometry import stops, walls  # noqa: E402
+import math
 
-RES, SIZE = 0.05, 20.0                      # m par pixel, côté de la carte (m), centrée sur l'origine
+from parking_robot.geometry import WALL_X, WALL_Y, map_obstacles  # noqa: E402
+
+RES = 0.05
+SIZE = 2 * math.ceil(max(WALL_X, WALL_Y) + 0.5)    # 20 m en mode normal, 22 m en mode démo                      # m par pixel, côté de la carte (m), centrée sur l'origine
 N = int(round(SIZE / RES))
 
 
@@ -28,7 +31,7 @@ def main():
     out = Path(__file__).resolve().parents[1] / 'maps'
     out.mkdir(exist_ok=True)
     img = np.full((N, N), 254, np.uint8)       # 254 = libre, 0 = occupé (ligne 0 de l'image = y maximal)
-    for b in walls() + stops():
+    for b in map_obstacles():
         fill(img, b)
     Image.fromarray(img).save(out / 'parking.pgm')
     with open(out / 'parking.yaml', 'w') as f:

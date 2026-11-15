@@ -17,6 +17,9 @@ from nav2_simple_commander.robot_navigator import BasicNavigator, TaskResult
 from std_msgs.msg import Empty, String
 
 from parking_robot.common import load_slots
+from parking_robot.geometry import AISLES_Y, LOOK_OFF, ROW_AISLE
+
+OFF = LOOK_OFF      # 0 en mode normal ; décale les points d'arrêt quand l'allée est plus large
 
 
 class Mission(BasicNavigator):
@@ -100,6 +103,13 @@ class Mission(BasicNavigator):
         self.drl_cancel_pub.publish(Empty())
         self.wait(0.5, stop_if_found=False)
 
+    def near_here(self, s, here_x):
+        """Place à relire maintenant ? Mode normal : sa colonne. Mode démo (plusieurs allées) : une place de
+        l'allée où roule le robot, dans sa colonne ou une colonne déjà dépassée (jamais l'autre allée)."""
+        if len(AISLES_Y) == 1:
+            return abs(s['x'] - here_x) < 1.5
+        return ROW_AISLE[s['row']][0] == self.cur_aisle and (s['x'] - here_x) * self.cur_dir < 1.5
+
     def inspect_suspects(self, here_x, only_column=True):
         """Vision active : va relire de près les plaques des places suspectes, la plus proche d'abord.
 
@@ -110,15 +120,15 @@ class Mission(BasicNavigator):
             return
         while not self.found:
             todo = [s for sid, s in self.slot_states.items() if s['state'] == 'suspect' and sid not in self.inspected
-                    and (not only_column or abs(s['x'] - here_x) < 1.5)]
+                    and (not only_column or self.near_here(s, here_x))]
             if not todo:
                 return
             s = min(todo, key=lambda s: abs(s['x'] - here_x))
-            side = 1.0 if s['y'] > 0 else -1.0
+            ay0, side = ROW_AISLE[s['row']]
             self.say(f"Place {s['id']} : plaque illisible d'ici, je m'approche")
             n = self.attempts.get(s['id'], 0)
             dy = (0.0, 0.3, -0.3)[n % 3]                 # distance un peu différente à chaque essai (idée d'Ahmed)
-            res = self.go_to(s['x'], side * (self.get_parameter('inspect_y').value + dy), side * math.pi / 2)
+            res = self.go_to(s['x'], ay0 + side * (self.get_parameter('inspect_y').value + OFF + dy), side * math.pi / 2)
             if res == 'found' or self.found:
                 return
             self.wait(self.get_parameter('pause_s').value)
@@ -135,9 +145,11 @@ class Mission(BasicNavigator):
         # Pas d'AMCL dans notre config : on attend map_server (nœud lifecycle présent sur Humble et Lyrical)
         self.waitUntilNav2Active(localizer='map_server')
         xs = sorted({s['x'] for s in load_slots()})
-        ly = self.get_parameter('look_y').value
+        ly = self.get_parameter('look_y').value + OFF
         # pour chaque colonne : face à la rangée A (un peu de son côté), puis face à la rangée B
-        waypoints = [wp for x in xs for wp in ((x, ly, math.pi / 2), (x, -ly, -math.pi / 2))]
+        # chaque allée, en S : face à la rangée du dessus, puis face à celle du dessous
+        waypoints = [wp for k, ay in enumerate(AISLES_Y) for x in (xs if k % 2 == 0 else xs[::-1])
+                     for wp in ((x, ay + ly, math.pi / 2), (x, ay - ly, -math.pi / 2))]
         t0 = self.now_s()
         self.say(f'Recherche démarrée (méthode {self.method})')
         for x, y, yaw in waypoints:
@@ -150,6 +162,8 @@ class Mission(BasicNavigator):
             self.wait(self.get_parameter('pause_s').value)
             if self.found:
                 break
+            self.cur_aisle = min(AISLES_Y, key=lambda a: abs(a - y))
+            self.cur_dir = 1.0 if AISLES_Y.index(self.cur_aisle) % 2 == 0 else -1.0   # sens du parcours en S
             self.inspect_suspects(x)
             if self.found:
                 break
@@ -160,12 +174,12 @@ class Mission(BasicNavigator):
             return
         f = self.found
         self.say(f"Véhicule trouvé : rangée {f['row']}, place {f['number']} ({self.now_s() - t0:.1f} s)")
-        side = 1.0 if f['y'] > 0 else -1.0
-        ay = self.get_parameter('approach_y').value
-        res = self.go_to(f['x'], side * ay, side * math.pi / 2, stop_if_found=False)
+        ay0, side = ROW_AISLE[f['row']]
+        ay = self.get_parameter('approach_y').value + OFF
+        res = self.go_to(f['x'], ay0 + side * ay, side * math.pi / 2, stop_if_found=False)
         if res != 'ok':                                      # second essai, 0,5 m plus loin de la voiture
             self.get_logger().info('Approche impossible, nouvel essai un peu plus loin')
-            res = self.go_to(f['x'], side * (ay - 0.5), side * math.pi / 2, stop_if_found=False, timeout_s=90.0)
+            res = self.go_to(f['x'], ay0 + side * (ay - 0.5), side * math.pi / 2, stop_if_found=False, timeout_s=90.0)
         self.say('Arrivé devant votre véhicule' if res == 'ok' else 'Échec de la navigation')
 
 

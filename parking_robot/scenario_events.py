@@ -9,14 +9,15 @@ import rclpy
 from rclpy.node import Node
 
 from parking_robot.common import IS_CLASSIC
+from parking_robot.geometry import BLOCKER
 
 
 class ScenarioEvents(Node):
     def __init__(self):
         super().__init__('scenario_events')
         self.declare_parameter('delay_s', 20.0)     # temps simulé avant l'apparition de l'obstacle
-        self.declare_parameter('x', 1.5)
-        self.declare_parameter('y', 0.0)
+        self.declare_parameter('x', BLOCKER[0])
+        self.declare_parameter('y', BLOCKER[1])
         self.done = False
         if IS_CLASSIC:
             from gazebo_msgs.srv import SetEntityState

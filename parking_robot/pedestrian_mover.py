@@ -14,15 +14,16 @@ from rclpy.time import Time
 from tf2_ros import Buffer, TransformListener
 
 from parking_robot.common import IS_CLASSIC
+from parking_robot.geometry import PED
 
 
 class PedestrianMover(Node):
     def __init__(self):
         super().__init__('pedestrian_mover')
         self.declare_parameter('name', 'ped_1')
-        self.declare_parameter('x', -1.5)         # où il traverse : entre deux colonnes d'observation (m)
-        self.declare_parameter('y_min', -2.5)     # doit correspondre à la pose initiale dans le monde
-        self.declare_parameter('y_max', 2.5)
+        self.declare_parameter('x', PED[0])         # où il traverse : entre deux colonnes d'observation (m)
+        self.declare_parameter('y_min', PED[1])     # doit correspondre à la pose initiale dans le monde
+        self.declare_parameter('y_max', PED[2])
         self.declare_parameter('speed', 0.5)      # m/s
         self.declare_parameter('yield_dist', 0.8)  # m ; 0 = piéton « aveugle » (test de stress)
         self.t, self.y = 0.0, None
