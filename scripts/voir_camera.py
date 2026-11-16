@@ -3,7 +3,7 @@
 
 Usage (depuis le dossier du projet, sur la Jetson avec un écran, ou sur un PC) :
     python3 scripts/voir_camera.py                 # webcam /dev/video0, YOLO (TensorRT si disponible)
-    python3 scripts/voir_camera.py --plaque-seule  # sans YOLO : encadre la plaque trouvée dans l'image
+    python3 scripts/voir_camera.py --plaque-seule  # lecture FIABLE des plaques imprimées (sans YOLO, en continu)
     python3 scripts/voir_camera.py --brut          # image seule, sans aucun traitement
     python3 scripts/voir_camera.py --camera 1
 
@@ -21,6 +21,7 @@ import sys
 import time
 
 import cv2
+import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -51,6 +52,10 @@ def main():
 
     from parking_robot.plates import find_plate_scene, read_plate, read_plate_robust
     from parking_robot.yolo_fast import COCO, charger_yolo
+    lecteur = None
+    if a.plaque_seule:
+        from parking_robot.plaque_fiable import LecteurFiable
+        lecteur = LecteurFiable()
 
     yolo = None
     if not (a.brut or a.plaque_seule):
@@ -83,22 +88,23 @@ def main():
                             cv2.FONT_HERSHEY_SIMPLEX, 0.55, couleur, 2)
                 if cls in (2, 5, 7):
                     voitures.append((int(x1), int(y1), int(x2), int(y2)))
-        elif a.plaque_seule:
-            plaque_roi = find_plate_scene(img)
-            if plaque_roi is not None:
-                cv2.putText(vue, 'plaque trouvee (l pour lire)', (10, 55),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 0), 2)
-                h, w = plaque_roi.shape[:2]
-                aper = cv2.resize(plaque_roi, (200, max(1, int(200 * h / w))))
-                vue[vue.shape[0] - aper.shape[0] - 10:vue.shape[0] - 10, 10:210] = aper
+        elif lecteur is not None:                           # lecture fiable, à chaque image + vote
+            confirme, lu, q = lecteur.mettre_a_jour(img)
+            if q is not None:
+                couleur = (0, 220, 0) if confirme else ((0, 220, 255) if lu else (0, 0, 255))
+                cv2.polylines(vue, [q.astype(np.int32).reshape(-1, 1, 2)], True, couleur, 2)
+            cv2.putText(vue, 'image : %s' % (lu or '-'), (10, 55), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 220, 255), 2)
+            if confirme and confirme != derniere_plaque:
+                print('PLAQUE CONFIRMEE : %s' % confirme)
+            derniere_plaque = confirme
 
         maintenant = time.time()
         fps = 0.9 * fps + 0.1 / max(1e-3, maintenant - t_prec)
         t_prec = maintenant
         cv2.putText(vue, '%.1f images/s' % fps, (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         if derniere_plaque:
-            cv2.putText(vue, 'plaque : %s' % derniere_plaque, (330, 25),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+            cv2.putText(vue, ('CONFIRMEE : %s' if lecteur is not None else 'plaque : %s') % derniere_plaque,
+                        (250, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
         cv2.imshow(titre, vue)
 
         touche = cv2.waitKey(1) & 0xFF
@@ -108,7 +114,7 @@ def main():
             chemin = '/tmp/camera_%d.jpg' % int(time.time())
             cv2.imwrite(chemin, img)
             print('image enregistrée :', chemin)
-        if touche == ord('l'):                               # lecture à la demande (≈ 0,4 s sur la Jetson)
+        if touche == ord('l') and lecteur is None:          # lecture à la demande (≈ 0,4 s sur la Jetson)
             t0 = time.time()
             lu = ''
             if plaque_roi is not None:
