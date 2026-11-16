@@ -207,7 +207,8 @@ def read_plate(plate_bgr, timeout_s=1.0):
     try:
         out = subprocess.run(['tesseract', 'stdin', 'stdout', '--psm', '7',
                               '-c', 'tessedit_char_whitelist=0123456789 '],
-                             input=png.tobytes(), capture_output=True, timeout=timeout_s, check=False)
+                             input=png.tobytes(), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             timeout=timeout_s, check=False)   # pas capture_output : Python 3.6 (Jetson)
     except (FileNotFoundError, subprocess.TimeoutExpired):
         return ''
     groups_read = re.findall(r'\d+', out.stdout.decode(errors='ignore'))
