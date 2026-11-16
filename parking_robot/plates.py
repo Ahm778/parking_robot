@@ -277,6 +277,46 @@ def find_plate_chars(crop_bgr):
     return out if out.size else None
 
 
+def find_plate_scene(frame_bgr, min_width_frac=0.08):
+    """Plaque dans une image entière, sans passer par YOLO (maquette du robot réel : boîtes ou voitures jouets).
+
+    Même principe que find_plate (zone sombre allongée contenant des caractères clairs), mais sur l'image
+    complète et sans l'agrandir : beaucoup plus rapide sur la Jetson. Renvoie la plaque redressée et agrandie
+    (prête pour read_plate) ou None.
+    """
+    h, w = frame_bgr.shape[:2]
+    value = frame_bgr.max(axis=2)
+    dark0 = (value < 80).astype(np.uint8) * 255
+    k = max(5, int(0.012 * h) | 1)
+    closed = cv2.morphologyEx(dark0, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_RECT, (k, k)))
+    best, best_area = None, 0
+    for dark in (closed, dark0):
+        contours, _ = cv2.findContours(dark, cv2.RETR_LIST, cv2.CHAIN_APPROX_SIMPLE)[-2:]
+        for c in contours:
+            rect = cv2.minAreaRect(c)
+            pts = cv2.boxPoints(rect)
+            s_, d_ = pts.sum(1), np.diff(pts, axis=1).ravel()
+            tl, br, tr, bl = pts[np.argmin(s_)], pts[np.argmax(s_)], pts[np.argmin(d_)], pts[np.argmax(d_)]
+            rw, rh = float(np.linalg.norm(tr - tl)), float(np.linalg.norm(bl - tl))
+            if rh < 8 or rw < min_width_frac * w or not 2.8 < rw / rh < 7.5 or rw * rh <= best_area:
+                continue
+            M = cv2.getPerspectiveTransform(np.float32([tl, tr, br, bl]),
+                                            np.float32([[0, 0], [rw, 0], [rw, rh], [0, rh]]))
+            roi_bgr = cv2.warpPerspective(frame_bgr, M, (int(rw), int(rh)), flags=cv2.INTER_CUBIC)
+            if roi_bgr.size == 0:
+                continue
+            roi = roi_bgr.max(axis=2)
+            white, black = (roi > 120).mean(), (roi < 80).mean()
+            if 0.04 < white < 0.5 and black > 0.45:
+                best, best_area = roi_bgr, rw * rh
+        if best is not None:
+            break
+    if best is None:
+        return None
+    scale = max(1.0, 150.0 / best.shape[0])                  # hauteur de travail confortable pour l'OCR
+    return cv2.resize(best, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+
+
 VALID_PLATE = re.compile(r'^\d{1,3}-\d{1,4}$')
 
 
